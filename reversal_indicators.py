@@ -57,8 +57,10 @@ def calculate_reversal_v3(df, sensitivity="Medium", calculation_method="average"
     # Fixed amount default from script is 0.05 (usually for futures, but keeping logic)
     fixed_amount = custom_settings['fixed_reversal'] if is_custom and custom_settings else 0.05
     
+    # Pine Script: math.max(close * finalPctThreshold / 100, math.max(input_revAmount, finalATRMult * atrValue))
+    # pct_threshold is already decimal (e.g. 0.01 for Medium), Pine divides by 100 again
     reversal_amount = pd.concat([
-        close * (pct_threshold / 100), 
+        close * (pct_threshold / 100),
         pd.Series([fixed_amount] * len(df), index=df.index),
         atr_val * atr_mult
     ], axis=1).max(axis=1)
@@ -86,67 +88,111 @@ def calculate_reversal_v3(df, sensitivity="Medium", calculation_method="average"
     
     n = len(df)
     
-    # State Variables
+    # ================================================================
+    # TWO-STAGE SIGNAL SYSTEM (matches Pine Script exactly)
+    # Stage 1: ZigZag detects pivot highs/lows
+    # Stage 2: Signal fires only when price CONFIRMS the pivot
+    #   - Bullish (U1): pricelConfirmed > EIL (price stays above pivot low)
+    #   - Bearish (D1): pricehConfirmed < EIH (price stays below pivot high)
+    # ================================================================
+    
+    # ZigZag State
     zhigh = priceh_vals[0]
     zlow = pricel_vals[0]
-    
-    # Tracking Indices for Pivot Time
     zhigh_idx = 0
     zlow_idx = 0
+    direction = 1  # 1 = Up (tracking highs), -1 = Down (tracking lows)
     
-    direction = 1 # 1 = Up (Looking for High), -1 = Down (Looking for Low)
+    # Signal Confirmation State (EIL / EIH from Pine Script)
+    eil = 0.0       # Last confirmed pivot low price
+    eih = 0.0       # Last confirmed pivot high price
+    eil_bar = 0     # Bar index of pivot low
+    eih_bar = 0     # Bar index of pivot high
+    sig_dir = 0     # 1 = looking for bullish confirm, -1 = looking for bearish confirm
+    sig_state = 0   # Current signal state: >0 = bullish, <0 = bearish, 0 = none
     
     # Output Arrays
-    signals = np.zeros(n) # 1 = Bull, -1 = Bear
-    signal_prices = np.zeros(n) # Price at which reversal happened (Pivot)
-    pivot_times = np.full(n, None) # Timestamps of the pivot
+    signals = np.zeros(n)          # 1 = Bull, -1 = Bear
+    signal_prices = np.zeros(n)    # Price at which reversal happened (Pivot)
+    pivot_times = pd.Series(pd.NaT, index=df.index, dtype='datetime64[ns, Asia/Kolkata]')
     
-    # Iterate
-    # Start slightly later to allow indicators to stabilize
+    # Start after indicators stabilize
     start_idx = max(21, confirmation_bars) 
     
     for i in range(start_idx, n):
-        # Current Confirmed Prices (Effective "Current" for logic due to lag)
         curr_ph = priceh_vals[i - confirmation_bars]
         curr_pl = pricel_vals[i - confirmation_bars]
         curr_rev = rev_amt_vals[i] 
         
-        # ZigZag Logic
-        if direction == 1: # Uptrend, updating High
+        # ---- STAGE 1: ZigZag Pivot Detection ----
+        confirmed_pivot = False
+        confirmed_pivot_is_high = False
+        confirmed_pivot_price = 0.0
+        confirmed_pivot_bar = 0
+        
+        if direction == 1:  # Uptrend, tracking highs
             if curr_ph > zhigh:
                 zhigh = curr_ph
                 zhigh_idx = i - confirmation_bars
             
-            # Check Reversal to Down
             if (zhigh - curr_pl) >= curr_rev:
-                # Pivot High Confirmed
-                # We found a High, now switch to looking for Low
+                # High pivot confirmed → switch to downtrend
+                confirmed_pivot = True
+                confirmed_pivot_is_high = True
+                confirmed_pivot_price = zhigh
+                confirmed_pivot_bar = zhigh_idx
                 direction = -1
                 zlow = curr_pl
                 zlow_idx = i - confirmation_bars
-                
-                # Signal Generation
-                signals[i] = -1
-                signal_prices[i] = zhigh
-                pivot_times[i] = df.index[zhigh_idx]
 
-        elif direction == -1: # Downtrend, updating Low
+        elif direction == -1:  # Downtrend, tracking lows
             if curr_pl < zlow:
                 zlow = curr_pl
                 zlow_idx = i - confirmation_bars
                 
-            # Check Reversal to Up
             if (curr_ph - zlow) >= curr_rev:
-                # Pivot Low Confirmed
-                # We found a Low, now switch to looking for High
+                # Low pivot confirmed → switch to uptrend
+                confirmed_pivot = True
+                confirmed_pivot_is_high = False
+                confirmed_pivot_price = zlow
+                confirmed_pivot_bar = zlow_idx
                 direction = 1
                 zhigh = curr_ph
                 zhigh_idx = i - confirmation_bars
-                
-                # Signal Generation
-                signals[i] = 1
-                signal_prices[i] = zlow
-                pivot_times[i] = df.index[zlow_idx]
+        
+        # ---- STAGE 2: Update EIL/EIH from confirmed pivots ----
+        if confirmed_pivot:
+            if confirmed_pivot_is_high:
+                eih = confirmed_pivot_price
+                eih_bar = confirmed_pivot_bar
+                sig_dir = -1  # Now looking for bearish confirmation
+            else:
+                eil = confirmed_pivot_price
+                eil_bar = confirmed_pivot_bar
+                sig_dir = 1   # Now looking for bullish confirmation
+        
+        # ---- STAGE 3: Signal Confirmation (Pine Script U1/D1 logic) ----
+        prev_sig_state = sig_state
+        
+        if sig_dir > 0 and eil > 0 and curr_pl > eil:
+            # Price low is above pivot low → bullish confirmed
+            if sig_state <= 0:
+                sig_state = 1
+        elif sig_dir < 0 and eih > 0 and curr_ph < eih:
+            # Price high is below pivot high → bearish confirmed
+            if sig_state >= 0:
+                sig_state = -1
+        
+        # U1: signal flipped to bullish
+        if sig_state > 0 and prev_sig_state <= 0:
+            signals[i] = 1
+            signal_prices[i] = eil
+            pivot_times.iloc[i] = df.index[eil_bar]
+        # D1: signal flipped to bearish
+        elif sig_state < 0 and prev_sig_state >= 0:
+            signals[i] = -1
+            signal_prices[i] = eih
+            pivot_times.iloc[i] = df.index[eih_bar]
     
     # 6. Trend State
     # Bull: 9>14>21

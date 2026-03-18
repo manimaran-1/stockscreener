@@ -114,11 +114,14 @@ def scan_symbol_reversal_prefetched(symbol, df, interval, settings):
                 # EMA
                 ema_sl_str = f"₹{round(signal_ema21, 2)}" if signal_ema21 > signal_price else f"₹{round(signal_ema21, 2)} ⏳"
 
+            # Reversal Time: where the REVERSAL label appears on TradingView chart (pivot candle)
+            pivot_time_val = signal_row['Pivot_Time']
+            reversal_time = pivot_time_val if pd.notna(pivot_time_val) else idx
+
             symbol_results.append({
                 "Stock": symbol,
                 "LTP": round(current_ltp, 2),
-                "Signal Time": idx.strftime('%Y-%m-%d %H:%M'),
-                "Chart Time": signal_row['Pivot_Time'].strftime('%Y-%m-%d %H:%M') if pd.notna(signal_row['Pivot_Time']) else "N/A",
+                "Reversal Time": reversal_time,
                 "Type": signal_type_str,
                 "Signal Price": signal_price,
                 "Pivot (Best SL/TP)": f"₹{round(pivot_sl, 2)} / ₹{round(pivot_tp, 2)}",
@@ -148,7 +151,7 @@ def scan_market(symbols, interval='1d', settings=None, progress_callback=None):
         settings = {}
         
     # Pre-fetch all data simultaneously (Chunked)
-    bulk_data_dict = data_loader.fetch_bulk_data(symbols, interval=interval, _progress_callback=progress_callback)
+    bulk_data_dict = data_loader.fetch_bulk_data(symbols, interval=interval, progress_callback=progress_callback)
         
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {
