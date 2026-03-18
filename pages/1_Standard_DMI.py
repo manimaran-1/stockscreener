@@ -4,18 +4,44 @@ import scanner
 import data_loader
 import concurrent.futures
 from datetime import datetime
-
 st.set_page_config(page_title="DMI Scanner Dashboard", layout="wide")
 
+# --- SECURITY & UI CONFIG ---
+hide_st_style = '''
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+'''
+st.markdown(hide_st_style, unsafe_allow_html=True)
+import hmac
+
+
+# -----------------------------
+
+# ── Period info lookup ──
+_PERIOD_MAP = {
+    '1m': ('5 days', 'Minute'),
+    '2m': ('1 month', '2-Minute'),
+    '5m': ('1 month', '5-Minute'),
+    '15m': ('1 month', '15-Minute'),
+    '30m': ('1 month', '30-Minute'),
+    '60m': ('1 month', '60-Minute'),
+    '90m': ('1 month', '90-Minute'),
+    '1h': ('1 month', 'Hourly'),
+    '1d': ('1 year', 'Daily'),
+    '5d': ('1 year', '5-Day'),
+    '1wk': ('1 year', 'Weekly'),
+    '1mo': ('5 years', 'Monthly'),
+    '3mo': ('5 years', 'Quarterly'),
+}
 st.title("Directional Movement Index (DMI) Scanner 🧭")
 st.markdown("Scan NSE stocks for DMI Crossovers (+DI / -DI) with recent activity indicators, S/R levels, and multi-timeframe support.")
-
 # Sidebar
 st.sidebar.header("Configuration")
-
 # 1. Universe Selection
 indices = data_loader.get_all_indices_dict()
-
 # Market Stats Categories
 market_stats = [
     "Top Gainers", 
@@ -25,22 +51,17 @@ market_stats = [
     "52 Week High", 
     "52 Week Low"
 ]
-
 st.sidebar.subheader("1A. Scan Mode")
 scan_mode = st.sidebar.radio("Mode", ["Full Index Scan", "Pre-Filter (Market Movers)"], index=0, help="Full Index computes every stock. Pre-Filter isolates only the highest volume/moving stocks today.", horizontal=True)
-
 # 1B. Base Universe Selection
 index_options = ["Custom List"] + market_stats + list(indices.keys())
 selected_index = st.sidebar.selectbox("Select Base Universe", index_options, index=0)
-
 # Caching logic for rapid loads (using Streamlit Session State for progress bars instead of deep cache locks)
 if 'nifty500_stats' not in st.session_state:
     st.session_state['nifty500_stats'] = None
-
 def get_nifty500_stats_with_progress():
     if st.session_state['nifty500_stats'] is not None:
         return st.session_state['nifty500_stats']
-
     st.info("Fetching market data (Fresh Load)...")
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -56,55 +77,45 @@ def get_nifty500_stats_with_progress():
     progress_bar.empty()
     status_text.empty()
     return df
-
 if selected_index in market_stats:
     if st.sidebar.button("🔄 Force Fetch New Data", key="refresh_btn_dmi"):
         st.session_state['nifty500_stats'] = None
         st.toast("Cache cleared! Fetching new data...", icon="🔄")
         st.rerun()
-
 # Custom List Inputs
 custom_symbols = []
+source_url = "N/A"
 if selected_index == "Custom List":
     custom_input = st.sidebar.text_area("Enter symbols (comma separated)", "RELIANCE.NS, TCS.NS, INFY.NS")
     if custom_input:
         raw_symbols = [s.strip() for s in custom_input.split(",") if s.strip()]
         custom_symbols = [f"{s}.BO" if s.isdigit() and len(s) == 6 else s for s in raw_symbols]
-
 # 2. Timeframe Selection
 st.sidebar.markdown("---")
 st.sidebar.subheader("Select Timeframe")
-
 # Predefined common timeframes supported by yfinance
 timeframes = ["1m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo"]
 selected_timeframe = st.sidebar.selectbox("Standard Timeframe", timeframes, index=timeframes.index("1d"))
-
 use_custom_timeframe = st.sidebar.checkbox("Use Custom Timeframe")
 if use_custom_timeframe:
     custom_tf_input = st.sidebar.text_input("Custom Timeframe (e.g., '90m', '2h')", value="90m")
     active_timeframe = custom_tf_input
 else:
     active_timeframe = selected_timeframe
-
 # Date Range Filter
 st.sidebar.markdown("---")
 st.sidebar.subheader("Filter Settings")
 default_start = datetime.now() - pd.Timedelta(days=30) # default to last 30 days
 default_end = datetime.now()
-
 start_date = st.sidebar.date_input("Start Date", default_start)
 end_date = st.sidebar.date_input("End Date", default_end)
-
 # 3. Strategy Configuration
 st.sidebar.markdown("---")
 st.sidebar.subheader("DMI Settings")
-
 dmi_length = st.sidebar.number_input("DMI/ADX Length", min_value=1, max_value=50, value=14)
 show_all = st.sidebar.checkbox("Show All Stocks (Not just crossovers)", value=False)
-
 st.sidebar.markdown("---")
 force_refresh = st.sidebar.checkbox("🔄 Force Refresh Data", help="Check this to clear the cache and download fresh live data from Yahoo Finance. Otherwise, data gets cached for 30 minutes to allow extremely fast timeframe switching.")
-
 if st.button("Run Scan"):
     symbols = []
     
@@ -129,25 +140,32 @@ if st.button("Run Scan"):
                  symbols = data_loader.get_market_movers(selected_index, df_stats)
             else:
                  symbols = []
+    
+        source_url = "TradingView (Live Market Data)"
     elif selected_index == "Nifty 500":
         with st.spinner("Fetching Nifty 500 symbol list..."):
-             symbols = data_loader.get_nifty500_symbols()
+             symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
     elif selected_index == "Nifty 200":
         with st.spinner("Fetching Nifty 200 symbol list..."):
-             symbols = data_loader.get_nifty200_symbols()
+             symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
     elif selected_index == "Nifty 50":
         with st.spinner("Fetching Nifty 50 symbol list..."):
-             symbols = data_loader.get_nifty200_symbols()[:50]
+             symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
+             symbols = symbols[:50]
     elif selected_index == "Total Market (All Stocks)":
         with st.spinner("Fetching Total Market..."):
              symbols = data_loader.get_index_constituents("Total Market")
              if not symbols: symbols = data_loader.get_nifty500_symbols()
+             symbols, source_url = data_loader.get_index_constituents("Total Market", return_source=True)
+             if not symbols: 
+                 symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
     else:
         try:
              with st.spinner(f"Fetching {selected_index} symbols..."):
-                  symbols = data_loader.get_index_constituents(selected_index)
+                  symbols, source_url = data_loader.get_index_constituents(selected_index, return_source=True)
         except Exception:
              symbols = []
+             source_url = "Error"
              
     # Automatically apply Market Mover intersection if 'Pre-Filter' mode is active AND a generic index was selected
     if scan_mode == "Pre-Filter (Market Movers)" and symbols and selected_index not in market_stats and selected_index != "Custom List":
@@ -187,21 +205,17 @@ if st.button("Run Scan"):
                 status_text.text(f"Scanning: {current} of {total} symbols completed...")
         
         # removed pre-filter logic to scan all stocks per user request
-
         # We delegate to scanner.scan_market which handles the massive bulk data fetch optimization automatically
         with st.spinner("Processing..."):
             results_df = scanner.scan_market(symbols, active_timeframe, start_date, end_date, show_all, force_refresh_token=force_refresh_token, progress_callback=update_scan_progress)
         
         progress_bar.empty()
         status_text.empty()
-
         st.session_state['res_1_Standard_DMI.py'] = results_df
         st.session_state['ctx_1_Standard_DMI.py'] = {'index': selected_index, 'tf': active_timeframe}
-
 if 'res_1_Standard_DMI.py' in st.session_state and st.session_state['res_1_Standard_DMI.py'] is not None:
     results_df = st.session_state['res_1_Standard_DMI.py'].copy()
     context = st.session_state.get('ctx_1_Standard_DMI.py', {'index': 'Custom', 'tf': '1d'})
-
     if results_df is not None and not results_df.empty:
         if not show_all:
             results_df = results_df[results_df['Signal Type'] != "None"]
@@ -231,16 +245,13 @@ if 'res_1_Standard_DMI.py' in st.session_state and st.session_state['res_1_Stand
                 return ''
                 
             return df.style.map(highlight_signal, subset=['Signal Type']).map(highlight_trend, subset=['Trend']) if 'Trend' in df.columns else df.style.map(highlight_signal, subset=['Signal Type'])
-
         styled_df = style_dataframe(results_df)
-
         st.dataframe(
             styled_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=500
         )
-
         
         # CSV Download
         csv = results_df.to_csv(index=False).encode('utf-8')
@@ -256,8 +267,6 @@ if 'res_1_Standard_DMI.py' in st.session_state and st.session_state['res_1_Stand
             st.warning("No data found for the selected date range. Ensure the market was open or expand the dates.")
         else:
             st.warning(f"0 crossovers found for {context['tf']} timeframe between {start_date} and {end_date}. Try expanding the dates or checking 'Show All Stocks'.")
-
-
 st.markdown("---")
 with st.expander("📚 Detailed Stop Loss & Take Profit Calculations"):
     st.markdown("""

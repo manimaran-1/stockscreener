@@ -3,13 +3,10 @@ import pandas as pd
 import sys
 import os
 import pytz
-
 # Allow sibling imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import keltner_data_loader as data_loader
 import keltner_scanner as scanner
-
 # Page Config
 st.set_page_config(
     page_title="Keltner + RSI Scanner",
@@ -17,23 +14,50 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- SECURITY & UI CONFIG ---
+hide_st_style = '''
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+'''
+st.markdown(hide_st_style, unsafe_allow_html=True)
+import hmac
+
+
+# -----------------------------
+
+# ── Period info lookup ──
+_PERIOD_MAP = {
+    '1m': ('5 days', 'Minute'),
+    '2m': ('1 month', '2-Minute'),
+    '5m': ('1 month', '5-Minute'),
+    '15m': ('1 month', '15-Minute'),
+    '30m': ('1 month', '30-Minute'),
+    '60m': ('1 month', '60-Minute'),
+    '90m': ('1 month', '90-Minute'),
+    '1h': ('1 month', 'Hourly'),
+    '1d': ('1 year', 'Daily'),
+    '5d': ('1 year', '5-Day'),
+    '1wk': ('1 year', 'Weekly'),
+    '1mo': ('5 years', 'Monthly'),
+    '3mo': ('5 years', 'Quarterly'),
+}
 st.title("Keltner Channels + RSI Reversal Scanner")
 st.markdown("""
 This independent scanner identifies **mean-reversion** opportunities by combining Keltner Channels (Volatility) and RSI (Momentum). 
 * **Bullish Entry:** RSI is Oversold (< 30) AND the candle's Low price touches or drops below the Lower Keltner Channel.
 * **Bearish Entry:** RSI is Overbought (> 70) AND the candle's High price touches or crosses the Upper Keltner Channel.
 """)
-
 # --- Sidebar Controls ---
 st.sidebar.header("Scanner Settings")
-
 # 1. Select Universe
 # 1. Index Selection
 try:
     indices = data_loader.INDICES_SLUGS
 except Exception:
     indices = data_loader.get_all_indices_dict()
-
 # Market Stats Categories
 market_stats = [
     "Top Gainers", 
@@ -43,22 +67,17 @@ market_stats = [
     "52 Week High", 
     "52 Week Low"
 ]
-
 st.sidebar.subheader("1A. Scan Mode")
 scan_mode = st.sidebar.radio("Mode", ["Full Index Scan", "Pre-Filter (Market Movers)"], index=0, help="Full Index computes every stock. Pre-Filter isolates only the highest volume/moving stocks today.", horizontal=True)
-
 # 1B. Base Universe Selection
 index_options = ["Custom List"] + market_stats + list(indices.keys())
 selected_index = st.sidebar.selectbox("Select Base Universe", index_options, index=0)
-
 # Caching logic for rapid loads (using Streamlit Session State for progress bars instead of deep cache locks)
 if 'nifty500_stats' not in st.session_state:
     st.session_state['nifty500_stats'] = None
-
 def get_nifty500_stats_with_progress():
     if st.session_state['nifty500_stats'] is not None:
         return st.session_state['nifty500_stats']
-
     st.info("Fetching market data (Fresh Load)...")
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -74,42 +93,35 @@ def get_nifty500_stats_with_progress():
     progress_bar.empty()
     status_text.empty()
     return df
-
 if selected_index in market_stats:
     import uuid
     if st.sidebar.button("🔄 Force Fetch New Data", key=f"refresh_btn_{uuid.uuid4().hex[:8]}"):
         st.session_state['nifty500_stats'] = None
         st.toast("Cache cleared! Fetching new data...", icon="🔄")
         st.rerun()
-
 custom_symbols = ""
+source_url = "N/A"
 if selected_index == "Custom List":
-
     custom_input = st.sidebar.text_area("Enter Symbols (comma separated)", "RELIANCE.NS, TCS.NS, INFY.NS")
     if custom_input:
         custom_symbols = [s.strip().upper() for s in custom_input.split(',')]
         # Ensure .NS suffix if not provided and it's a typical Indian stock format
         custom_symbols = [s if s.endswith('.NS') or s.endswith('.BO') else f"{s}.NS" for s in custom_symbols]
-
 # 2. Select Timeframe
 st.sidebar.subheader("2. Timeframe")
 timeframe_options = ['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h', '1d', '5d', '1wk', '1mo', '3mo']
 active_timeframe = st.sidebar.selectbox("Interval", timeframe_options, index=8) # Default 1d
-
 # 3. Keltner & RSI Parameters
 st.sidebar.subheader("3. Indicator Settings")
-
 kc_length = st.sidebar.number_input("Keltner length", min_value=1, max_value=200, value=20)
 kc_mult = st.sidebar.number_input("Keltner Multiplier", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
 kc_bands_style = st.sidebar.selectbox("Bands Style", ["True Range", "Average True Range"], index=0)
 kc_atr_length = st.sidebar.number_input("ATR Length", min_value=1, max_value=200, value=10)
 rsi_length = st.sidebar.number_input("RSI Length", min_value=1, max_value=100, value=14)
-
 # 4. Filtering Options
 st.sidebar.subheader("4. Data Filters")
 show_all = st.sidebar.checkbox("Show All Stocks (Ignore Signal Rules)", value=False)
 st.sidebar.caption("Check this to display indicator values for every stock in the universe regardless of if they fired an alert.")
-
 use_date_filter = st.sidebar.checkbox("Filter by Date Range", value=True)
 start_date = None
 end_date = None
@@ -120,12 +132,9 @@ if use_date_filter:
         start_date = st.date_input("Start Date", datetime.date.today() - datetime.timedelta(days=30))
     with col2:
         end_date = st.date_input("End Date", datetime.date.today())
-
 st.sidebar.markdown("---")
 force_refresh = st.sidebar.checkbox("🔄 Force Refresh Data", help="Check this to clear the cache and download fresh live data from Yahoo Finance. Otherwise, data gets cached for 30 minutes to allow extremely fast timeframe switching.")
-
 # --- Main Logic ---
-
 if st.button("Run Scan"):
     symbols = []
     
@@ -149,25 +158,32 @@ if st.button("Run Scan"):
                  symbols = data_loader.get_market_movers(selected_index, df_stats)
             else:
                  symbols = []
+    
+        source_url = "TradingView (Live Market Data)"
     elif selected_index == "Nifty 500":
         with st.spinner("Fetching Nifty 500 symbol list..."):
-             symbols = data_loader.get_nifty500_symbols()
+             symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
     elif selected_index == "Nifty 200":
         with st.spinner("Fetching Nifty 200 symbol list..."):
-             symbols = data_loader.get_nifty200_symbols()
+             symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
     elif selected_index == "Nifty 50":
         with st.spinner("Fetching Nifty 50 symbol list..."):
-             symbols = data_loader.get_nifty200_symbols()[:50]
+             symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
+             symbols = symbols[:50]
     elif selected_index == "Total Market (All Stocks)":
         with st.spinner("Fetching Total Market..."):
              symbols = data_loader.get_index_constituents("Total Market")
              if not symbols: symbols = data_loader.get_nifty500_symbols()
+             symbols, source_url = data_loader.get_index_constituents("Total Market", return_source=True)
+             if not symbols: 
+                 symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
     else:
         try:
              with st.spinner(f"Fetching {selected_index} symbols..."):
-                  symbols = data_loader.get_index_constituents(selected_index)
+                  symbols, source_url = data_loader.get_index_constituents(selected_index, return_source=True)
         except Exception:
              symbols = []
+             source_url = "Error"
              
     # Automatically apply Market Mover intersection if 'Pre-Filter' mode is active AND a generic index was selected
     if scan_mode == "Pre-Filter (Market Movers)" and symbols and selected_index not in market_stats and selected_index != "Custom List":
@@ -207,7 +223,6 @@ if st.button("Run Scan"):
                 status_text.text(f"Scanning: {current} of {total} symbols completed...")
         
         # removed pre-filter logic to scan all stocks per user request
-
         settings = {
             'kc_length': kc_length,
             'kc_mult': kc_mult,
@@ -222,14 +237,11 @@ if st.button("Run Scan"):
         
         progress_bar.empty()
         status_text.empty()
-
         st.session_state['res_6_Keltner_RSI.py'] = results_df
         st.session_state['ctx_6_Keltner_RSI.py'] = {'index': selected_index, 'tf': active_timeframe}
-
 if 'res_6_Keltner_RSI.py' in st.session_state and st.session_state['res_6_Keltner_RSI.py'] is not None:
     results_df = st.session_state['res_6_Keltner_RSI.py'].copy()
     context = st.session_state.get('ctx_6_Keltner_RSI.py', {'index': 'Custom', 'tf': '1d'})
-
     if results_df is not None and not results_df.empty:
         if not show_all:
             results_df = results_df[results_df['Signal Type'] != "None"]
@@ -259,16 +271,13 @@ if 'res_6_Keltner_RSI.py' in st.session_state and st.session_state['res_6_Keltne
                 return ''
                 
             return df.style.map(highlight_signal, subset=['Signal Type']).map(highlight_trend, subset=['Trend']) if 'Trend' in df.columns else df.style.map(highlight_signal, subset=['Signal Type'])
-
         styled_df = style_dataframe(results_df)
-
         st.dataframe(
             styled_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=500
         )
-
         
         # Export
         csv = results_df.to_csv(index=False)
@@ -283,23 +292,19 @@ if 'res_6_Keltner_RSI.py' in st.session_state and st.session_state['res_6_Keltne
             st.warning(f"No signals found for {context['index']} on {context['tf']} timeframe within the selected dates.")
         else:
             st.warning(f"No data retrieved for {context['index']}.")
-
 # --- Explanation Section ---
 st.markdown("---")
 st.subheader("💡 How This Scanner Works")
-
 try:
-    st.image("keltner_rsi_strategy.png", use_container_width=True)
+    st.image("keltner_rsi_strategy.png", width="stretch")
 except Exception:
     pass
     
 st.markdown("""
 This scanner identifies **Mean Reversion** setups based on the standard **Keltner Channel & RSI** strategy. It looks for moments where a stock's price has stretched too far out of its normal bounds (like a rubber band) and is mathematically likely to snap back.
-
 ### 🎯 Signal Generation
 *   **🟢 Bullish Signal (Buy):** The stock's price touches or dips below the **Lower Keltner Band**, AND the RSI is strictly **<= 30** (Oversold). The strategy anticipates the price will bounce back up towards the Middle Band.
 *   **🔴 Bearish Signal (Sell/Short):** The stock's price touches or breaks above the **Upper Keltner Band**, AND the RSI is strictly **>= 70** (Overbought). The strategy anticipates the price will drop back down towards the Middle Band.
-
 ### 📊 Understanding the Table Columns
 *   **Signal:** The Mean-Reversion trade entry triggered by the strategy logic (Bullish=Buy, Bearish=Short).
 *   **Trend (EMA 21):** The overall long-term direction of the stock. It is completely independent of the Signal. If the Last Traded Price (LTP) is higher than its 21-period Exponential Moving Average, the underlying momentum trend is *Bullish*. If the LTP is lower, it is *Bearish*. A setup where the *Signal* contradicts the *Trend* (e.g., Bearish Signal during a Bullish Trend) implies you are betting on a temporary pullback.

@@ -4,6 +4,20 @@ import reversal_scanner as scanner
 import data_loader
 import concurrent.futures
 
+# --- SECURITY & UI CONFIG ---
+hide_st_style = '''
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+'''
+st.markdown(hide_st_style, unsafe_allow_html=True)
+import hmac
+
+
+# -----------------------------
+
 st.title("Reversal Detection Pro v3.0 Scanner 🚀")
 st.markdown("Scan NSE stocks for non-repainting reversal signals based on V3 logic.")
 
@@ -41,7 +55,6 @@ def get_nifty500_stats_with_progress():
     # Check cache validity (Infinite until manual refresh)
     if st.session_state['nifty500_stats'] is not None:
         return st.session_state['nifty500_stats']
-
     # Cache Miss or Expired: Fetch with Progress
     st.info("Fetching market data (Fresh Load)...")
     
@@ -57,6 +70,7 @@ def get_nifty500_stats_with_progress():
     
     # Update Cache
     st.session_state['nifty500_stats'] = df
+    from datetime import datetime
     st.session_state['nifty500_fetch_time'] = datetime.now()
     
     progress_bar.empty()
@@ -76,6 +90,7 @@ selected_timeframe = st.sidebar.selectbox("Select Timeframe", timeframes, index=
 
 # Custom Search / List inputs
 custom_symbols = []
+source_url = "N/A"
 if selected_index == "Custom List":
     custom_input = st.sidebar.text_area("Enter symbols (comma separated)", "RELIANCE.NS, ALKEM.NS, INFY.NS")
     if custom_input:
@@ -100,15 +115,31 @@ custom_settings = {}
 if sensitivity == "Custom":
     with st.sidebar.expander("Custom Settings"):
         custom_settings['atr_mult'] = st.number_input("ATR Multiplier", 0.1, 10.0, 2.0)
-        custom_settings['pct_threshold'] = st.number_input("Percentage Threshold", 0.001, 0.1, 0.01)
+        custom_settings['pct_threshold'] = st.number_input("Percentage Threshold", 0.001, 1.0, 0.1)
         custom_settings['fixed_reversal'] = st.number_input("Fixed Reversal Amount", 0.0, 100.0, 0.05)
         custom_settings['atr_length'] = st.number_input("ATR Length", 1, 50, 5)
         custom_settings['avg_length'] = st.number_input("Average Length", 1, 50, 5)
 
 # 4. Calculation Method
 calc_method = st.sidebar.selectbox("Calculation Method", ["average", "high_low"])
-
 from datetime import datetime, timedelta
+
+# ── Period info lookup ──
+_PERIOD_MAP = {
+    '1m': ('5 days', 'Minute'),
+    '2m': ('1 month', '2-Minute'),
+    '5m': ('1 month', '5-Minute'),
+    '15m': ('1 month', '15-Minute'),
+    '30m': ('1 month', '30-Minute'),
+    '60m': ('1 month', '60-Minute'),
+    '90m': ('1 month', '90-Minute'),
+    '1h': ('1 month', 'Hourly'),
+    '1d': ('1 year', 'Daily'),
+    '5d': ('1 year', '5-Day'),
+    '1wk': ('1 year', 'Weekly'),
+    '1mo': ('5 years', 'Monthly'),
+    '3mo': ('5 years', 'Quarterly'),
+}
 
 # 5. Date Range Filter
 st.sidebar.subheader("Filter Settings")
@@ -139,25 +170,32 @@ if st.button("Run Scan"):
                  symbols = data_loader.get_market_movers(selected_index, df_stats)
             else:
                  symbols = []
+    
+        source_url = "TradingView (Live Market Data)"
     elif selected_index == "Nifty 500":
         with st.spinner("Fetching Nifty 500 symbol list..."):
-             symbols = data_loader.get_nifty500_symbols()
+             symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
     elif selected_index == "Nifty 200":
         with st.spinner("Fetching Nifty 200 symbol list..."):
-             symbols = data_loader.get_nifty200_symbols()
+             symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
     elif selected_index == "Nifty 50":
         with st.spinner("Fetching Nifty 50 symbol list..."):
-             symbols = data_loader.get_nifty200_symbols()[:50]
+             symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
+             symbols = symbols[:50]
     elif selected_index == "Total Market (All Stocks)":
         with st.spinner("Fetching Total Market..."):
              symbols = data_loader.get_index_constituents("Total Market")
              if not symbols: symbols = data_loader.get_nifty500_symbols()
+             symbols, source_url = data_loader.get_index_constituents("Total Market", return_source=True)
+             if not symbols: 
+                 symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
     else:
         try:
              with st.spinner(f"Fetching {selected_index} symbols..."):
-                  symbols = data_loader.get_index_constituents(selected_index)
+                  symbols, source_url = data_loader.get_index_constituents(selected_index, return_source=True)
         except Exception:
              symbols = []
+             source_url = "Error"
              
     # Automatically apply Market Mover intersection if 'Pre-Filter' mode is active AND a generic index was selected
     if scan_mode == "Pre-Filter (Market Movers)" and symbols and selected_index not in market_stats and selected_index != "Custom List":
@@ -198,10 +236,6 @@ if st.button("Run Scan"):
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        results = []
-        total_symbols = len(symbols)
-        completed = 0
-        
         def update_scan_progress(current, total, msg=None):
             progress = min(float(current) / max(float(total), 1.0), 1.0)
             progress_bar.progress(min(float(progress), 1.0))
@@ -217,17 +251,16 @@ if st.button("Run Scan"):
         status_text.empty()
         progress_bar.empty()
         
-        if not results_df.empty:
+        if results_df is not None and not results_df.empty:
             st.success(f"Found {len(results_df)} signals!")
             
-            # Formatting
+            # Formatting (Updated for v3)
             st.dataframe(
                 results_df,
                 column_config={
                     "Stock": "Stock",
-                    "Chart Time": st.column_config.DatetimeColumn("Chart Time", format="D MMM, HH:mm"),
+                    "Reversal Time": st.column_config.DatetimeColumn("Reversal Time", format="D MMM YYYY, HH:mm Z"),
                     "LTP": st.column_config.NumberColumn("LTP", format="₹ %.2f"),
-                    "Signal Time": st.column_config.DatetimeColumn("Alert Time", format="D MMM, HH:mm"),
                     "Type": "Signal Type",
                     "Signal Price": st.column_config.NumberColumn("Signal Price", format="₹ %.2f"),
                     "Pivot (SL/TP)": "Pivot (Best SL/TP)",
@@ -243,7 +276,7 @@ if st.button("Run Scan"):
                     "Volume": st.column_config.NumberColumn("Volume", format="%d"),
                 },
                 hide_index=True,
-                use_container_width=True
+                width="stretch" # width="stretch" corresponds to use_container_width=True in newer versions optionally
             )
             
             # Download

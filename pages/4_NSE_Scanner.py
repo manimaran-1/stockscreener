@@ -5,16 +5,43 @@ import data_loader
 import pytz
 from datetime import datetime
 
+# --- SECURITY & UI CONFIG ---
+hide_st_style = '''
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+'''
+st.markdown(hide_st_style, unsafe_allow_html=True)
+import hmac
+
+
+# -----------------------------
+
+# ── Period info lookup ──
+_PERIOD_MAP = {
+    '1m': ('5 days', 'Minute'),
+    '2m': ('1 month', '2-Minute'),
+    '5m': ('1 month', '5-Minute'),
+    '15m': ('1 month', '15-Minute'),
+    '30m': ('1 month', '30-Minute'),
+    '60m': ('1 month', '60-Minute'),
+    '90m': ('1 month', '90-Minute'),
+    '1h': ('1 month', 'Hourly'),
+    '1d': ('1 year', 'Daily'),
+    '5d': ('1 year', '5-Day'),
+    '1wk': ('1 year', 'Weekly'),
+    '1mo': ('5 years', 'Monthly'),
+    '3mo': ('5 years', 'Quarterly'),
+}
 st.title("Main NSE Scanner 📊")
 st.markdown("Filter stocks based on custom EMA, Stoch RSI, SMI, and MACD criteria.")
-
 # Sidebar Controls
 st.sidebar.header("Configuration")
-
 # Universe Selection
 # aggregated list of index names
 indices_dict = data_loader.get_all_indices_dict()
-
 market_stats = [
     "Top Gainers", 
     "Top Losers", 
@@ -23,21 +50,16 @@ market_stats = [
     "52 Week High", 
     "52 Week Low"
 ]
-
 st.sidebar.subheader("1A. Scan Mode")
 scan_mode = st.sidebar.radio("Mode", ["Full Index Scan", "Pre-Filter (Market Movers)"], index=0, help="Full Index computes every stock. Pre-Filter isolates only the highest volume/moving stocks today.", horizontal=True)
-
 # 1B. Base Universe Selection
 universe_options = ["Custom List"] + market_stats + list(indices_dict.keys())
 selected_universe = st.sidebar.selectbox("Select Stock Universe", universe_options, index=0)
-
 if 'nifty500_stats' not in st.session_state:
     st.session_state['nifty500_stats'] = None
-
 def get_nifty500_stats_with_progress():
     if st.session_state['nifty500_stats'] is not None:
         return st.session_state['nifty500_stats']
-
     st.info("Fetching market data (Fresh Load)...")
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -53,40 +75,37 @@ def get_nifty500_stats_with_progress():
     progress_bar.empty()
     status_text.empty()
     return df
-
 if selected_universe in market_stats:
     import uuid
     if st.sidebar.button("🔄 Force Fetch New Data", key=f"refresh_btn_{uuid.uuid4().hex[:8]}"):
         st.session_state['nifty500_stats'] = None
         st.toast("Cache cleared! Fetching new data...", icon="🔄")
         st.rerun()
-
 # Timeframe Selection
 # Expanded list: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, 3mo
 timeframe_options = ["1d", "1wk", "1mo", "1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"]
 selected_timeframe = st.sidebar.selectbox("Select Timeframe", timeframe_options)
-
 st.sidebar.markdown("---")
 st.sidebar.info("**Timezone**: IST (Asia/Kolkata)")
 st.sidebar.info("**Data Source**: Yahoo Finance (IST Optimized)")
 st.sidebar.info("**Note**: Intraday scans show all signals from today.")
-
 # Custom List Inputs
 custom_input = ""
 if selected_universe == "Custom List":
     custom_input = st.sidebar.text_area("Enter symbols (comma separated)", "RELIANCE.NS, ALKEM.NS, INFY.NS")
-
 # Load Symbols based on selection
 symbols = []
-
 # Fetch Base Universe Symbols
+source_url = "N/A"
 if selected_universe == "Custom List":
+    source_url = "User Input"
     raw_symbols = [s.strip() for s in custom_input.split(",") if s.strip()]
     symbols = [f"{s}.BO" if s.isdigit() and len(s) == 6 else s.upper() for s in raw_symbols]
     if not symbols:
          st.warning("Please enter at least one symbol.")
          st.stop()
 elif selected_universe in market_stats:
+    source_url = "TradingView (Live Market Data)"
     with st.spinner(f"Fetching market movers: {selected_universe}..."):
         df_stats = get_nifty500_stats_with_progress()
         if df_stats is not None and not df_stats.empty:
@@ -95,23 +114,26 @@ elif selected_universe in market_stats:
              symbols = []
 elif selected_universe == "Nifty 500":
     with st.spinner("Fetching Nifty 500 symbol list..."):
-         symbols = data_loader.get_nifty500_symbols()
+         symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
 elif selected_universe == "Nifty 200":
     with st.spinner("Fetching Nifty 200 symbol list..."):
-         symbols = data_loader.get_nifty200_symbols()
+         symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
 elif selected_universe == "Nifty 50":
     with st.spinner("Fetching Nifty 50 symbol list..."):
-         symbols = data_loader.get_nifty200_symbols()[:50]
+         symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
+         symbols = symbols[:50]
 elif selected_universe == "Total Market (All Stocks)":
     with st.spinner("Fetching Total Market..."):
-         symbols = data_loader.get_index_constituents("Total Market")
-         if not symbols: symbols = data_loader.get_nifty500_symbols()
+         symbols, source_url = data_loader.get_index_constituents("Total Market", return_source=True)
+         if not symbols: 
+             symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
 else:
     try:
          with st.spinner(f"Fetching {selected_universe} symbols..."):
-              symbols = data_loader.get_index_constituents(selected_universe)
+              symbols, source_url = data_loader.get_index_constituents(selected_universe, return_source=True)
     except Exception:
          symbols = []
+         source_url = "Error"
          
 # Automatically apply Market Mover intersection if 'Pre-Filter' mode is active AND a generic index was selected
 if scan_mode == "Pre-Filter (Market Movers)" and symbols and selected_universe not in market_stats and selected_universe != "Custom List":
@@ -134,10 +156,9 @@ if scan_mode == "Pre-Filter (Market Movers)" and symbols and selected_universe n
              if not symbols:
                   st.warning(f"No stocks in '{selected_universe}' qualified as top market movers today.")
                   st.stop()
-
 st.write(f"**Universe:** {selected_universe} ({len(symbols)} symbols)")
 st.write(f"**Timeframe:** {selected_timeframe}")
-
+st.info(f"✅ **Universe Loaded:** {selected_universe} ({len(symbols)} symbols dynamically fetched from [{source_url}]({source_url}))")
 # Run Scan Button
 if st.button("Run Scanner"):
     if not symbols:
@@ -174,6 +195,7 @@ if st.button("Run Scanner"):
                     "Stock Name": "Stock",
                     "LTP": st.column_config.NumberColumn("LTP", format="₹ %.2f"),
                     "Signal Time": "Time (IST)",
+                    "Signal Price": st.column_config.NumberColumn("Signal Price", format="₹ %.2f"),
                     "Pivot (Best SL/TP)": "Pivot (Best SL/TP)",
                     "EMA SL": st.column_config.TextColumn("EMA 21 SL", help="⚠️ When you see ⏳, the price has not crossed the Moving Average yet. Wait for the stock to cross the EMA line before you can mathematically use it as a Trailing Stop Loss!"),
                     "ATR (SL/TP)": "ATR (SL / TP)",
@@ -190,7 +212,7 @@ if st.button("Run Scanner"):
                     "MACD": st.column_config.NumberColumn("MACD", format="%.2f"),
                 },
                 hide_index=True,
-                use_container_width=True
+                width="stretch"
             )
             
             # Download option
@@ -204,7 +226,6 @@ if st.button("Run Scanner"):
             )
         else:
             st.warning("No stocks matched the criteria/timeframe conditions.")
-
 with st.expander("View Logic Details"):
     st.markdown("""
     **Buy Conditions:**
@@ -215,7 +236,6 @@ with st.expander("View Logic Details"):
     5. **SMI**: SMI (10,3) > 30
     6. **MACD**: MACD Line (12,26,9) > 0.75
     """)
-
 st.markdown("---")
 with st.expander("📚 Detailed Stop Loss & Take Profit Calculations"):
     st.markdown("""

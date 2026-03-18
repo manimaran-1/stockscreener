@@ -6,18 +6,44 @@ importlib.reload(scanner)
 import data_loader
 import concurrent.futures
 from datetime import datetime
-
 st.set_page_config(page_title="Arbitrage Scanner Dashboard", layout="wide")
 
+# --- SECURITY & UI CONFIG ---
+hide_st_style = '''
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+'''
+st.markdown(hide_st_style, unsafe_allow_html=True)
+import hmac
+
+
+# -----------------------------
+
+# ── Period info lookup ──
+_PERIOD_MAP = {
+    '1m': ('5 days', 'Minute'),
+    '2m': ('1 month', '2-Minute'),
+    '5m': ('1 month', '5-Minute'),
+    '15m': ('1 month', '15-Minute'),
+    '30m': ('1 month', '30-Minute'),
+    '60m': ('1 month', '60-Minute'),
+    '90m': ('1 month', '90-Minute'),
+    '1h': ('1 month', 'Hourly'),
+    '1d': ('1 year', 'Daily'),
+    '5d': ('1 year', '5-Day'),
+    '1wk': ('1 year', 'Weekly'),
+    '1mo': ('5 years', 'Monthly'),
+    '3mo': ('5 years', 'Quarterly'),
+}
 st.title("NSE/BSE Arbitrage Scanner ⚖️")
 st.markdown("Scan stocks to capture live prices on both NSE and BSE. Evaluates the percentage difference to find arbitrage trading opportunities.")
-
 # Sidebar
 st.sidebar.header("Configuration")
-
 # 1. Universe Selection
 indices = data_loader.get_all_indices_dict()
-
 market_stats = [
     "Top Gainers", 
     "Top Losers", 
@@ -26,16 +52,12 @@ market_stats = [
     "52 Week High", 
     "52 Week Low"
 ]
-
 st.sidebar.subheader("1A. Scan Mode")
 scan_mode = st.sidebar.radio("Mode", ["Full Index Scan", "Pre-Filter (Market Movers)"], index=0, help="Full Index computes every stock. Pre-Filter isolates only the highest volume/moving stocks today.", horizontal=True)
-
 # Build the combined unified list
 index_options = ["Total Market (All Stocks)", "Custom List"] + list(indices.keys())
-
 # Let the user pick from the massive combined list regardless of mode, but handle the mode logically below
 selected_index = st.sidebar.selectbox("Select Base Universe", index_options, index=0)
-
 # 1C. Pre-Filter Settings (Conditional)
 if scan_mode == "Pre-Filter (Market Movers)":
     st.sidebar.markdown("---")
@@ -43,14 +65,11 @@ if scan_mode == "Pre-Filter (Market Movers)":
     selected_filter = st.sidebar.selectbox("Filter By", market_stats, index=0)
 else:
     selected_filter = None
-
 if 'nifty500_stats' not in st.session_state:
     st.session_state['nifty500_stats'] = None
-
 def get_nifty500_stats_with_progress():
     if st.session_state['nifty500_stats'] is not None:
         return st.session_state['nifty500_stats']
-
     st.info("Fetching market data (Fresh Load)...")
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -66,32 +85,27 @@ def get_nifty500_stats_with_progress():
     progress_bar.empty()
     status_text.empty()
     return df
-
 if selected_index in market_stats:
     if st.sidebar.button("🔄 Force Fetch New Data", key="refresh_btn_arb"):
         st.session_state['nifty500_stats'] = None
         st.toast("Cache cleared! Fetching new data...", icon="🔄")
         st.rerun()
-
 # Custom List Inputs
 custom_symbols = []
+source_url = "N/A"
 if selected_index == "Custom List":
     custom_input = st.sidebar.text_area("Enter symbols (comma separated)", "RELIANCE.NS, TCS.NS, INFY.NS")
     if custom_input:
         raw_symbols = [s.strip() for s in custom_input.split(",") if s.strip()]
         custom_symbols = [f"{s}.BO" if s.isdigit() and len(s) == 6 else s for s in raw_symbols]
-
 # 2. Timeframe Selection
 st.sidebar.markdown("---")
 st.sidebar.subheader("Select Timeframe")
-
 timeframes = ["1m", "5m", "15m", "30m", "1h", "1d"]
 selected_timeframe = st.sidebar.selectbox("Standard Timeframe", timeframes, index=timeframes.index("1m"))
-
 st.sidebar.markdown("---")
 assumed_capital = st.sidebar.number_input("Assumed Capital (₹) for Calc", min_value=1000, value=100000, step=10000)
 min_diff = st.sidebar.number_input("Minimum Difference (%) to Show", min_value=0.0, max_value=100.0, value=0.05, step=0.01, format="%.2f")
-
 if st.button("Run Arbitrage Scan"):
     symbols = []
     
@@ -112,25 +126,32 @@ if st.button("Run Arbitrage Scan"):
                  symbols = data_loader.get_market_movers(selected_index, df_stats)
             else:
                  symbols = []
+    
+        source_url = "TradingView (Live Market Data)"
     elif selected_index == "Nifty 500":
         with st.spinner("Fetching Nifty 500 symbol list..."):
-             symbols = data_loader.get_nifty500_symbols()
+             symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
     elif selected_index == "Nifty 200":
         with st.spinner("Fetching Nifty 200 symbol list..."):
-             symbols = data_loader.get_nifty200_symbols()
+             symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
     elif selected_index == "Nifty 50":
         with st.spinner("Fetching Nifty 50 symbol list..."):
-             symbols = data_loader.get_nifty200_symbols()[:50]
+             symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
+             symbols = symbols[:50]
     elif selected_index == "Total Market (All Stocks)":
         with st.spinner("Fetching Total Market..."):
              symbols = data_loader.get_index_constituents("Total Market")
              if not symbols: symbols = data_loader.get_nifty500_symbols()
+             symbols, source_url = data_loader.get_index_constituents("Total Market", return_source=True)
+             if not symbols: 
+                 symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
     else:
         try:
              with st.spinner(f"Fetching {selected_index} symbols..."):
-                  symbols = data_loader.get_index_constituents(selected_index)
+                  symbols, source_url = data_loader.get_index_constituents(selected_index, return_source=True)
         except Exception:
              symbols = []
+             source_url = "Error"
              
     # Automatically apply Market Mover intersection if 'Pre-Filter' mode is active AND a generic index was selected
     if scan_mode == "Pre-Filter (Market Movers)" and symbols and selected_index not in market_stats and selected_index != "Custom List":
@@ -153,7 +174,6 @@ if st.button("Run Arbitrage Scan"):
                  if not symbols:
                       st.warning(f"No stocks in '{selected_index}' qualified as top market movers today.")
                       st.stop()
-
     if symbols:
         # Strip extension for Arbitrage specifically
         base_symbols = [s.split('.')[0] if '.' in s else s for s in symbols]
@@ -163,6 +183,8 @@ if st.button("Run Arbitrage Scan"):
         
         total_symbols = len(base_symbols)
         
+        _period_text, _tf_label = _PERIOD_MAP.get(active_timeframe, ('1 year', 'Daily'))
+        st.info(f"✅ **Universe Loaded:** {selected_index} — **{len(symbols)} symbols** | ⏱️ Timeframe: **{_tf_label} ({active_timeframe})** | 📅 Data period: **{_period_text}** | 🔄 Source: [{source_url}]({source_url})")
         progress_bar = st.progress(0)
         status_text = st.empty()
         
@@ -174,7 +196,7 @@ if st.button("Run Arbitrage Scan"):
             status_text.text(msg)
             
         st.info(f"Scanning {total_symbols} stocks using real-time synchronized broker APIs...")
-        
+            
         # New Blazing Fast TradingView API Method with Loading Animation
         results_df = scanner.scan_market_arbitrage(base_symbols, selected_timeframe, min_diff=min_diff, progress_callback=update_progress)
         
@@ -232,7 +254,7 @@ if st.button("Run Arbitrage Scan"):
                     "BSE Volume": st.column_config.NumberColumn("BSE Volume", format="%d"),
                     "Buy Price": None # Hide intermediate column
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
             

@@ -1,26 +1,51 @@
 import streamlit as st
 import pandas as pd
 import datetime
-
 import adx_sar_data_loader as data_loader
 import adx_sar_scanner as scanner
-
 # Page Config
 st.set_page_config(page_title="ADX + SAR Scanner", page_icon="📊", layout="wide")
 
+# --- SECURITY & UI CONFIG ---
+hide_st_style = '''
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+'''
+st.markdown(hide_st_style, unsafe_allow_html=True)
+import hmac
+
+
+# -----------------------------
+
+# ── Period info lookup ──
+_PERIOD_MAP = {
+    '1m': ('5 days', 'Minute'),
+    '2m': ('1 month', '2-Minute'),
+    '5m': ('1 month', '5-Minute'),
+    '15m': ('1 month', '15-Minute'),
+    '30m': ('1 month', '30-Minute'),
+    '60m': ('1 month', '60-Minute'),
+    '90m': ('1 month', '90-Minute'),
+    '1h': ('1 month', 'Hourly'),
+    '1d': ('1 year', 'Daily'),
+    '5d': ('1 year', '5-Day'),
+    '1wk': ('1 year', 'Weekly'),
+    '1mo': ('5 years', 'Monthly'),
+    '3mo': ('5 years', 'Quarterly'),
+}
 # Header
 st.title("📊 ADX + Parabolic SAR Momentum Scanner")
 st.markdown("Scan Nifty/BSE markets for ADX and PSAR momentum trades based on Fingrad ADX & Parabolic SAR strategy.")
-
 # Sidebar Settings
 st.sidebar.header("Scanner Settings")
-
 # 1. Index Selection
 try:
     indices = data_loader.INDICES_SLUGS
 except Exception:
     indices = data_loader.get_all_indices_dict()
-
 # Market Stats Categories
 market_stats = [
     "Top Gainers", 
@@ -30,22 +55,17 @@ market_stats = [
     "52 Week High", 
     "52 Week Low"
 ]
-
 st.sidebar.subheader("1A. Scan Mode")
 scan_mode = st.sidebar.radio("Mode", ["Full Index Scan", "Pre-Filter (Market Movers)"], index=0, help="Full Index computes every stock. Pre-Filter isolates only the highest volume/moving stocks today.", horizontal=True)
-
 # 1B. Base Universe Selection
 index_options = ["Custom List"] + market_stats + list(indices.keys())
 selected_index = st.sidebar.selectbox("Select Base Universe", index_options, index=0)
-
 # Caching logic for rapid loads (using Streamlit Session State for progress bars instead of deep cache locks)
 if 'nifty500_stats' not in st.session_state:
     st.session_state['nifty500_stats'] = None
-
 def get_nifty500_stats_with_progress():
     if st.session_state['nifty500_stats'] is not None:
         return st.session_state['nifty500_stats']
-
     st.info("Fetching market data (Fresh Load)...")
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -61,36 +81,30 @@ def get_nifty500_stats_with_progress():
     progress_bar.empty()
     status_text.empty()
     return df
-
 if selected_index in market_stats:
     import uuid
     if st.sidebar.button("🔄 Force Fetch New Data", key=f"refresh_btn_{uuid.uuid4().hex[:8]}"):
         st.session_state['nifty500_stats'] = None
         st.toast("Cache cleared! Fetching new data...", icon="🔄")
         st.rerun()
-
 custom_symbols = ""
+source_url = "N/A"
 if selected_index == "Custom List":
-
     custom_symbols = st.sidebar.text_area("Enter Stock Symbols (comma separated, NSE/BSE supported)", "TCS.NS, INFY.NS, RELIANCE.NS")
     st.sidebar.caption("E.g., TCS.NS, RELIANCE.NS, COFORGE.BO")
-
 # 2. Timeframe Selection
 timeframe_options = ['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h', '1d', '5d', '1wk', '1mo', '3mo']
 active_timeframe = st.sidebar.selectbox("Interval", timeframe_options, index=8) # Default 1d
-
 # 3. Settings
 st.sidebar.subheader("3. Indicator Settings")
 adx_length = st.sidebar.number_input("ADX Length", min_value=1, max_value=200, value=14)
 st.sidebar.markdown("---")
 psar_af = st.sidebar.number_input("PSAR Initial/Step AF", min_value=0.001, max_value=0.5, value=0.02, step=0.01)
 psar_max_af = st.sidebar.number_input("PSAR Max AF", min_value=0.01, max_value=1.0, value=0.2, step=0.01)
-
 # 4. Filtering Options
 st.sidebar.subheader("4. Data Filters")
 show_all = st.sidebar.checkbox("Show All Stocks (Ignore Signal Rules)", value=False)
 st.sidebar.caption("Check this to display indicator values for every stock in the universe regardless of if they fired an alert.")
-
 # 5. Date Range Filtering
 st.sidebar.subheader("5. Date Range Filter")
 filter_by_date = st.sidebar.checkbox("Filter by Signal Date", value=True)
@@ -99,10 +113,8 @@ if filter_by_date:
     col1, col2 = st.sidebar.columns(2)
     start_date = col1.date_input("Start Date", datetime.date.today() - datetime.timedelta(days=30))
     end_date = col2.date_input("End Date", datetime.date.today())
-
 st.sidebar.markdown("---")
 force_refresh = st.sidebar.checkbox("🔄 Force Refresh Data", help="Check this to clear the cache and download fresh live data from Yahoo Finance. Otherwise, data gets cached for 30 minutes to allow extremely fast timeframe switching.")
-
 # --- RUN SCAN ---
 if st.button("Run ADX/SAR Scan", type="primary"):
     symbols = []
@@ -127,25 +139,32 @@ if st.button("Run ADX/SAR Scan", type="primary"):
                  symbols = data_loader.get_market_movers(selected_index, df_stats)
             else:
                  symbols = []
+    
+        source_url = "TradingView (Live Market Data)"
     elif selected_index == "Nifty 500":
         with st.spinner("Fetching Nifty 500 symbol list..."):
-             symbols = data_loader.get_nifty500_symbols()
+             symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
     elif selected_index == "Nifty 200":
         with st.spinner("Fetching Nifty 200 symbol list..."):
-             symbols = data_loader.get_nifty200_symbols()
+             symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
     elif selected_index == "Nifty 50":
         with st.spinner("Fetching Nifty 50 symbol list..."):
-             symbols = data_loader.get_nifty200_symbols()[:50]
+             symbols, source_url = data_loader.get_nifty200_symbols(return_source=True)
+             symbols = symbols[:50]
     elif selected_index == "Total Market (All Stocks)":
         with st.spinner("Fetching Total Market..."):
              symbols = data_loader.get_index_constituents("Total Market")
              if not symbols: symbols = data_loader.get_nifty500_symbols()
+             symbols, source_url = data_loader.get_index_constituents("Total Market", return_source=True)
+             if not symbols: 
+                 symbols, source_url = data_loader.get_nifty500_symbols(return_source=True)
     else:
         try:
              with st.spinner(f"Fetching {selected_index} symbols..."):
-                  symbols = data_loader.get_index_constituents(selected_index)
+                  symbols, source_url = data_loader.get_index_constituents(selected_index, return_source=True)
         except Exception:
              symbols = []
+             source_url = "Error"
              
     # Automatically apply Market Mover intersection if 'Pre-Filter' mode is active AND a generic index was selected
     if scan_mode == "Pre-Filter (Market Movers)" and symbols and selected_index not in market_stats and selected_index != "Custom List":
@@ -168,10 +187,11 @@ if st.button("Run ADX/SAR Scan", type="primary"):
                  if not symbols:
                       st.warning(f"No stocks in '{selected_index}' qualified as top market movers today.")
                       st.stop()
-
     if not symbols:
         st.error("Could not fetch symbols for the selected index.")
     else:
+        _period_text, _tf_label = _PERIOD_MAP.get(active_timeframe, ('1 year', 'Daily'))
+        st.info(f"✅ **Universe Loaded:** {selected_index} — **{len(symbols)} symbols** | ⏱️ Timeframe: **{_tf_label} ({active_timeframe})** | 📅 Data period: **{_period_text}** | 🔄 Source: [{source_url}]({source_url})")
         status_text = st.empty()
         progress_bar = st.progress(0)
         
@@ -183,7 +203,6 @@ if st.button("Run ADX/SAR Scan", type="primary"):
                 status_text.text("Consolidating signals...")
             else:
                 status_text.text(f"Scanning: {current} of {total} symbols completed...")
-
         settings = {
             'adx_length': adx_length,
             'psar_af': psar_af,
@@ -195,14 +214,11 @@ if st.button("Run ADX/SAR Scan", type="primary"):
         
         progress_bar.empty()
         status_text.empty()
-
         st.session_state['res_11_ADX_SAR.py'] = results_df
         st.session_state['ctx_11_ADX_SAR.py'] = {'index': selected_index, 'tf': active_timeframe}
-
 if 'res_11_ADX_SAR.py' in st.session_state and st.session_state['res_11_ADX_SAR.py'] is not None:
     results_df = st.session_state['res_11_ADX_SAR.py'].copy()
     context = st.session_state.get('ctx_11_ADX_SAR.py', {'index': 'Custom', 'tf': '1d'})
-
     if results_df is not None and not results_df.empty:
         if not show_all:
             results_df = results_df[results_df['Signal Type'] != "None"]
@@ -227,16 +243,13 @@ if 'res_11_ADX_SAR.py' in st.session_state and st.session_state['res_11_ADX_SAR.
                 return ''
                 
             return df.style.map(highlight_signal, subset=['Signal Type']).map(highlight_trend, subset=['Trend']) if 'Trend' in df.columns else df.style.map(highlight_signal, subset=['Signal Type'])
-
         styled_df = style_dataframe(results_df)
-
         st.dataframe(
             styled_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=500
         )
-
         
         # Export
         csv = results_df.to_csv(index=False)
@@ -251,23 +264,18 @@ if 'res_11_ADX_SAR.py' in st.session_state and st.session_state['res_11_ADX_SAR.
             st.warning(f"No signals found for {context['index']} on {context['tf']} timeframe within the selected dates.")
         else:
             st.warning(f"No data retrieved for {context['index']}.")
-
 # --- Explanation Section ---
 st.markdown("---")
 st.subheader("💡 How This Scanner Works")
-
 try:
-    st.image("/home/mohan/.gemini/antigravity/scratch/dmi_scanner/adx_sar_strategy.jpg", use_container_width=True)
+    st.image("/home/mohan/.gemini/antigravity/scratch/dmi_scanner/adx_sar_strategy.jpg", width="stretch")
 except Exception:
     pass
-
 st.markdown("""
 This scanner identifies **Momentum and Trend-Following** setups based on the **ADX Indicator & Parabolic SAR** strategy. 
-
 ### 🎯 Signal Generation
 *   **🟢 Bullish Signal (Buy/Long):** **SAR Dots** are below the candle, AND **ADX** crosses above 25.
 *   **🔴 Bearish Signal (Sell/Short):** **SAR Dots** are above the candle, AND **ADX** crosses above 25.
-
 ### 📊 Understanding the Table Columns
 *   **Signal:** The entry triggered by the strategy (Bullish=Buy, Bearish=Short).
 *   **Trend (EMA 21):** The overall long-term direction of the stock.
