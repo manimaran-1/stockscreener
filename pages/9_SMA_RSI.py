@@ -3,15 +3,13 @@ import pandas as pd
 import datetime
 import sma_rsi_data_loader as data_loader
 import sma_rsi_scanner as scanner
-# Page Config
-st.set_page_config(page_title="9/21 SMA + RSI Scanner", page_icon="📊", layout="wide")
 
 # --- SECURITY & UI CONFIG ---
 hide_st_style = '''
 <style>
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
-header {visibility: hidden;}
+.stDeployButton {display:none;}
 </style>
 '''
 st.markdown(hide_st_style, unsafe_allow_html=True)

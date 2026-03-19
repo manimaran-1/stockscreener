@@ -4,14 +4,13 @@ import scanner
 import data_loader
 import concurrent.futures
 from datetime import datetime
-st.set_page_config(page_title="DMI Scanner Dashboard", layout="wide")
 
 # --- SECURITY & UI CONFIG ---
 hide_st_style = '''
 <style>
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
-header {visibility: hidden;}
+.stDeployButton {display:none;}
 </style>
 '''
 st.markdown(hide_st_style, unsafe_allow_html=True)

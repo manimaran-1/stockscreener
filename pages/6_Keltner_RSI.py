@@ -7,19 +7,13 @@ import pytz
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import keltner_data_loader as data_loader
 import keltner_scanner as scanner
-# Page Config
-st.set_page_config(
-    page_title="Keltner + RSI Scanner",
-    page_icon="📈",
-    layout="wide"
-)
 
 # --- SECURITY & UI CONFIG ---
 hide_st_style = '''
 <style>
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
-header {visibility: hidden;}
+.stDeployButton {display:none;}
 </style>
 '''
 st.markdown(hide_st_style, unsafe_allow_html=True)

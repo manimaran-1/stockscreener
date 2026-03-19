@@ -6,14 +6,13 @@ importlib.reload(scanner)
 import data_loader
 import concurrent.futures
 from datetime import datetime
-st.set_page_config(page_title="Arbitrage Scanner Dashboard", layout="wide")
 
 # --- SECURITY & UI CONFIG ---
 hide_st_style = '''
 <style>
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
-header {visibility: hidden;}
+.stDeployButton {display:none;}
 </style>
 '''
 st.markdown(hide_st_style, unsafe_allow_html=True)
@@ -183,8 +182,8 @@ if st.button("Run Arbitrage Scan"):
         
         total_symbols = len(base_symbols)
         
-        _period_text, _tf_label = _PERIOD_MAP.get(active_timeframe, ('1 year', 'Daily'))
-        st.info(f"✅ **Universe Loaded:** {selected_index} — **{len(symbols)} symbols** | ⏱️ Timeframe: **{_tf_label} ({active_timeframe})** | 📅 Data period: **{_period_text}** | 🔄 Source: [{source_url}]({source_url})")
+        _period_text, _tf_label = _PERIOD_MAP.get(selected_timeframe, ('1 year', 'Daily'))
+        st.info(f"✅ **Universe Loaded:** {selected_index} — **{len(symbols)} symbols** | ⏱️ Timeframe: **{_tf_label} ({selected_timeframe})** | 📅 Data period: **{_period_text}** | 🔄 Source: [{source_url}]({source_url})")
         progress_bar = st.progress(0)
         status_text = st.empty()
         
