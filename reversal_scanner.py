@@ -151,7 +151,7 @@ def scan_market(symbols, interval='1d', settings=None, progress_callback=None):
         settings = {}
         
     # Pre-fetch all data simultaneously (Chunked)
-    bulk_data_dict = data_loader.fetch_bulk_data(symbols, interval=interval, progress_callback=progress_callback)
+    bulk_data_dict = data_loader.fetch_bulk_data(symbols, interval=interval, _progress_callback=progress_callback)
         
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {
